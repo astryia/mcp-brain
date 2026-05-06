@@ -1,0 +1,14 @@
+# Secrets / local env
+.env
+.env.local
+supabase/functions/**/.env
+
+# Supabase local dev state
+.supabase/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code local settings (personal permissions)
+.claude/settings.local.json
