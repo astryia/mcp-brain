@@ -21,7 +21,8 @@ create or replace function public.hybrid_search_memories(
   include_completed boolean default false,
   full_text_weight  float default 1.0,
   semantic_weight   float default 1.0,
-  rrf_k             int default 50
+  rrf_k             int default 50,
+  semantic_threshold float default 0.7
 )
 returns table (
   id           uuid,
@@ -77,6 +78,7 @@ as $$
       ) as rank_ix
     from candidates c
     where c.embedding is not null
+      and (c.embedding <=> query_embedding) < semantic_threshold
     order by c.embedding <=> query_embedding
     limit least(match_count, 30) * 2
   ),
@@ -114,7 +116,8 @@ create or replace function public.hybrid_search_entities(
   filter_type      text default null,
   full_text_weight float default 1.0,
   semantic_weight  float default 1.0,
-  rrf_k            int default 50
+  rrf_k            int default 50,
+  semantic_threshold float default 0.7
 )
 returns table (
   id         uuid,
@@ -149,6 +152,7 @@ as $$
     from public.entities e
     where e.embedding is not null
       and (filter_type is null or e.type = filter_type)
+      and (e.embedding <=> query_embedding) < semantic_threshold
     order by e.embedding <=> query_embedding
     limit least(match_count, 20) * 2
   ),
