@@ -4,9 +4,8 @@ import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPTransport } from '@hono/mcp'
 import { Hono } from 'hono'
-import { bearerAuth } from 'hono/bearer-auth'
 
-import { BRAIN_SECRET } from './lib/env.ts'
+import { auth } from './lib/auth.ts'
 import { rateLimit } from './lib/rate-limit.ts'
 import { registerAllTools } from './tools/index.ts'
 
@@ -19,7 +18,7 @@ await server.connect(transport)
 
 const app = new Hono()
 app.use('*', rateLimit)
-app.use('*', bearerAuth({ token: BRAIN_SECRET }))
+app.use('*', auth)
 
 // Health-check — GET with no body, skips MCP handling.
 app.get('*', (c) => c.json({ status: 'ok', service: 'mcp-brain', version: '1.0.0' }))
