@@ -9,7 +9,29 @@ import { auth } from './lib/auth.ts'
 import { rateLimit } from './lib/rate-limit.ts'
 import { registerAllTools } from './tools/index.ts'
 
-const server = new McpServer({ name: 'mcp-brain', version: '1.0.0' })
+const server = new McpServer({ name: 'mcp-brain', version: '1.0.0' }, {
+  instructions: `
+Personal second brain. Two concepts:
+
+- **Memory** — event, fact, note, reminder, or idea (anything the user wants stored).
+- **Entity** — a persistent named thing (person, place, object) referenced repeatedly.
+
+Heuristic: any proper noun is probably an entity. Search for it before creating it.
+
+## Storing
+Tool descriptions explain the per-call workflow. Policy:
+- Store only when the user asks or the info is clearly worth recalling.
+- Prefer **update_memory** over a near-duplicate; **delete_memory** only to correct mistakes or on explicit request.
+- Reuse existing categories; create a new sub-category only when nothing fits. Call **list_categories** to discover the tree — never assume names.
+- Use **link_entities** when two entities have a meaningful relationship (parent/child, employer, owner-of).
+
+## Memory types
+memory · note · reminder (needs due_date) · idea
+
+## Retrieving
+**search_memories** for content; **search_entities** + **get_entity** for facts about a named thing. Use date filters for time-scoped questions.
+`.trim(),
+})
 registerAllTools(server)
 
 // Single transport — connect once, reuse for all requests.
