@@ -26,6 +26,11 @@ jobs:
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
+      - name: Push edge function secrets
+        run: supabase secrets set BRAIN_SECRET=${{ secrets.BRAIN_SECRET }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
       - name: Deploy edge function
         run: supabase functions deploy mcp-brain --no-verify-jwt
         env:
