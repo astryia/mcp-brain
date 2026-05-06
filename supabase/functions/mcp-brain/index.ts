@@ -9,12 +9,24 @@ import { createClient } from 'jsr:@supabase/supabase-js@2'
 import { z } from 'zod'
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Environment — fail fast on misconfiguration
+// ─────────────────────────────────────────────────────────────────────────────
+function requireEnv(name: string, minLength = 1): string {
+  const value = Deno.env.get(name)
+  if (!value || value.length < minLength) {
+    throw new Error(`env ${name} is missing or too short (min ${minLength} chars)`)
+  }
+  return value
+}
+
+const SUPABASE_URL = requireEnv('SUPABASE_URL')
+const SUPABASE_SERVICE_ROLE_KEY = requireEnv('SUPABASE_SERVICE_ROLE_KEY', 32)
+const BRAIN_SECRET = requireEnv('BRAIN_SECRET', 32)
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Supabase client (service role — bypasses RLS for personal brain)
 // ─────────────────────────────────────────────────────────────────────────────
-const supabase = createClient(
-  Deno.env.get('SUPABASE_URL')!,
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-)
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Embedding model (gte-small, 384 dims)
@@ -28,6 +40,44 @@ async function embed(text: string): Promise<number[]> {
     normalize: true,
   })
   return Array.from(result as Float32Array | number[])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Reusable input limits.
+const MAX_CONTENT_LEN = 10_000
+const MAX_NAME_LEN = 200
+const MAX_SUBTYPE_LEN = 100
+const MAX_RELATION_LEN = 100
+const MAX_PROPERTIES_BYTES = 8_192
+const MAX_ENTITIES_PER_MEMORY = 25
+const MAX_CATEGORY_SEGMENT_LEN = 100
+
+const propertiesSchema = z
+  .record(z.unknown())
+  .refine(
+    (v) => new TextEncoder().encode(JSON.stringify(v)).byteLength <= MAX_PROPERTIES_BYTES,
+    { message: `properties exceeds ${MAX_PROPERTIES_BYTES} bytes` },
+  )
+
+const categoryPathSchema = z
+  .array(z.string().trim().min(1).max(MAX_CATEGORY_SEGMENT_LEN))
+  .min(1)
+  .max(3)
+
+// Map a thrown value to a generic error for the client. Logs the original.
+function safeError(scope: string, err: unknown): never {
+  const msg = err instanceof Error ? err.message : String(err)
+  console.error(`[mcp-brain:${scope}]`, msg)
+  // Surface a short, non-leaky message to the caller.
+  throw new Error(`${scope} failed`)
+}
+
+function check<T>(scope: string, error: { message: string } | null, data: T): T {
+  if (error) safeError(scope, error.message)
+  return data
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -54,32 +104,31 @@ server.registerTool(
     },
   },
   async ({ parent_id }) => {
-    const query = supabase
+    let q = supabase
       .from('categories')
       .select('id, name, level')
       .order('name')
+    q = parent_id ? q.eq('parent_id', parent_id) : q.is('parent_id', null)
 
-    if (parent_id) {
-      query.eq('parent_id', parent_id)
-    } else {
-      query.is('parent_id', null)
-    }
+    const { data, error } = await q
+    if (error) safeError('list_categories', error.message)
 
-    const { data, error } = await query
-    if (error) throw new Error(error.message)
+    const rows = (data ?? []) as { id: string; name: string; level: number }[]
+    const ids = rows.map((c) => c.id)
 
-    // Check which categories have children
-    const ids = (data ?? []).map((c: { id: string }) => c.id)
     let childSet = new Set<string>()
     if (ids.length > 0) {
-      const { data: children } = await supabase
+      const { data: children, error: childErr } = await supabase
         .from('categories')
         .select('parent_id')
         .in('parent_id', ids)
-      childSet = new Set((children ?? []).map((c: { parent_id: string }) => c.parent_id))
+      if (childErr) safeError('list_categories', childErr.message)
+      childSet = new Set(
+        ((children ?? []) as { parent_id: string }[]).map((c) => c.parent_id),
+      )
     }
 
-    const categories = (data ?? []).map((c: { id: string; name: string; level: number }) => ({
+    const categories = rows.map((c) => ({
       id: c.id,
       name: c.name,
       level: c.level,
@@ -103,7 +152,7 @@ server.registerTool(
       'Use the returned entity IDs in add_memory to avoid creating duplicates. ' +
       'If multiple entities match (e.g. two people named "Mr Smith"), inspect subtype and properties to pick the right one.',
     inputSchema: {
-      query: z.string().describe('Name or description to search for'),
+      query: z.string().trim().min(1).max(MAX_NAME_LEN).describe('Name or description to search for'),
       type: z
         .enum(['person', 'place', 'object', 'event', 'concept'])
         .optional()
@@ -121,7 +170,7 @@ server.registerTool(
       filter_type: type ?? null,
     })
 
-    if (error) throw new Error(error.message)
+    if (error) safeError('search_entities', error.message)
 
     return {
       content: [{ type: 'text', text: JSON.stringify(data ?? [], null, 2) }],
@@ -140,14 +189,14 @@ server.registerTool(
       '(2) Use search_entities for every person, place, or thing mentioned — pass their IDs to avoid duplicates. ' +
       'Only set create:true on an entity object when search_entities returned no good match.',
     inputSchema: {
-      content: z.string().describe('The memory content'),
+      content: z.string().trim().min(1).max(MAX_CONTENT_LEN).describe('The memory content'),
       type: z.enum(['memory', 'reminder', 'note', 'idea']),
-      category_path: z
-        .array(z.string())
-        .min(1)
-        .describe('Category path from root, e.g. ["Work & Career", "projects"]'),
+      category_path: categoryPathSchema.describe(
+        'Category path from root, e.g. ["Work & Career", "projects"]',
+      ),
       due_date: z
         .string()
+        .datetime({ offset: true })
         .optional()
         .describe('ISO 8601 due date/time for reminders'),
       entities: z
@@ -156,14 +205,15 @@ server.registerTool(
             z.object({ id: z.string().uuid() }).describe('Resolved entity — pass only id'),
             z
               .object({
-                name: z.string(),
+                name: z.string().trim().min(1).max(MAX_NAME_LEN),
                 type: z.enum(['person', 'place', 'object', 'event', 'concept']),
-                subtype: z.string().optional(),
-                properties: z.record(z.unknown()).optional(),
+                subtype: z.string().trim().min(1).max(MAX_SUBTYPE_LEN).optional(),
+                properties: propertiesSchema.optional(),
               })
               .describe('New entity to create — only when search_entities found no match'),
           ]),
         )
+        .max(MAX_ENTITIES_PER_MEMORY)
         .optional()
         .describe('Entities mentioned in this memory'),
     },
@@ -174,9 +224,9 @@ server.registerTool(
       'resolve_category_path',
       { path: category_path },
     )
-    if (catError) throw new Error(catError.message)
+    if (catError) safeError('add_memory.category', catError.message)
 
-    // Generate embedding
+    // Embed the memory content
     const embedding = await embed(content)
 
     // Insert memory
@@ -192,52 +242,77 @@ server.registerTool(
       .select('id')
       .single()
 
-    if (memError) throw new Error(memError.message)
+    if (memError) safeError('add_memory.insert', memError.message)
+    const memoryId = memory!.id as string
 
-    // Resolve + link entities
-    if (entities && entities.length > 0) {
-      const entityIds: string[] = []
+    // Resolve + link entities. On any failure, compensate by deleting the
+    // freshly-inserted memory so we don't leak orphan rows.
+    try {
+      if (entities && entities.length > 0) {
+        // Embed all new entities in parallel.
+        const newEntities = entities.filter((e) => !('id' in e)) as Array<{
+          name: string
+          type: string
+          subtype?: string
+          properties?: Record<string, unknown>
+        }>
 
-      for (const e of entities) {
-        if ('id' in e) {
-          entityIds.push(e.id)
-        } else {
-          // Create new entity with embedding
-          const entityText = e.subtype ? `${e.name} ${e.subtype}` : e.name
-          const entityEmbedding = await embed(entityText)
+        const newEntityEmbeddings = await Promise.all(
+          newEntities.map((e) => embed(e.subtype ? `${e.name} ${e.subtype}` : e.name)),
+        )
 
-          const { data: newEntity, error: entError } = await supabase
+        // Insert new entities (one round-trip).
+        const newEntityIds: string[] = []
+        if (newEntities.length > 0) {
+          const rows = newEntities.map((e, i) => ({
+            name: e.name,
+            type: e.type,
+            subtype: e.subtype ?? null,
+            properties: e.properties ?? null,
+            embedding: newEntityEmbeddings[i],
+          }))
+          const { data: inserted, error: entError } = await supabase
             .from('entities')
-            .insert({
-              name: e.name,
-              type: e.type,
-              subtype: e.subtype ?? null,
-              properties: e.properties ?? null,
-              embedding: entityEmbedding,
-            })
+            .insert(rows)
             .select('id')
-            .single()
+          if (entError) safeError('add_memory.entity_insert', entError.message)
+          for (const row of inserted ?? []) newEntityIds.push((row as { id: string }).id)
+        }
 
-          if (entError) throw new Error(entError.message)
-          entityIds.push(newEntity.id)
+        // Build full ID list preserving order is unimportant here.
+        const entityIds: string[] = []
+        let newIx = 0
+        for (const e of entities) {
+          if ('id' in e) entityIds.push(e.id)
+          else entityIds.push(newEntityIds[newIx++])
+        }
+
+        // Upsert memory_entities links
+        if (entityIds.length > 0) {
+          const { error: linkError } = await supabase.from('memory_entities').upsert(
+            entityIds.map((eid) => ({ memory_id: memoryId, entity_id: eid })),
+            { onConflict: 'memory_id,entity_id' },
+          )
+          if (linkError) safeError('add_memory.link', linkError.message)
         }
       }
-
-      // Upsert memory_entities links
-      if (entityIds.length > 0) {
-        const { error: linkError } = await supabase.from('memory_entities').upsert(
-          entityIds.map((eid) => ({ memory_id: memory.id, entity_id: eid })),
-          { onConflict: 'memory_id,entity_id' },
-        )
-        if (linkError) throw new Error(linkError.message)
+    } catch (err) {
+      // Compensating delete — best-effort. Logs but does not mask the original.
+      const { error: cleanupErr } = await supabase
+        .from('memories')
+        .delete()
+        .eq('id', memoryId)
+      if (cleanupErr) {
+        console.error('[mcp-brain:add_memory.cleanup]', cleanupErr.message)
       }
+      throw err
     }
 
     return {
       content: [
         {
           type: 'text',
-          text: JSON.stringify({ id: memory.id, message: 'Memory saved.' }),
+          text: JSON.stringify({ id: memoryId, message: 'Memory saved.' }),
         },
       ],
     }
@@ -253,16 +328,15 @@ server.registerTool(
       'Hybrid semantic + full-text search across memories, notes, reminders, and ideas. ' +
       'Filter by category path (partial is fine), type, date ranges, or due date ranges.',
     inputSchema: {
-      query: z.string().describe('What to search for'),
-      category_path: z
-        .array(z.string())
+      query: z.string().trim().min(1).max(MAX_CONTENT_LEN).describe('What to search for'),
+      category_path: categoryPathSchema
         .optional()
         .describe('Filter to a category path, e.g. ["Work & Career"] or ["Work & Career", "projects"]'),
       type: z.enum(['memory', 'reminder', 'note', 'idea']).optional(),
-      date_from: z.string().optional().describe('ISO 8601 — filter memories created after this date'),
-      date_to: z.string().optional().describe('ISO 8601 — filter memories created before this date'),
-      due_date_from: z.string().optional().describe('ISO 8601 — filter reminders with due date after this'),
-      due_date_to: z.string().optional().describe('ISO 8601 — filter reminders with due date before this'),
+      date_from: z.string().datetime({ offset: true }).optional().describe('ISO 8601 — filter memories created after this date'),
+      date_to: z.string().datetime({ offset: true }).optional().describe('ISO 8601 — filter memories created before this date'),
+      due_date_from: z.string().datetime({ offset: true }).optional().describe('ISO 8601 — filter reminders with due date after this'),
+      due_date_to: z.string().datetime({ offset: true }).optional().describe('ISO 8601 — filter reminders with due date before this'),
       include_completed: z
         .boolean()
         .optional()
@@ -288,7 +362,7 @@ server.registerTool(
       const { data, error } = await supabase.rpc('resolve_category_path', {
         path: category_path,
       })
-      if (error) throw new Error(error.message)
+      if (error) safeError('search_memories.category', error.message)
       categoryId = data
     }
 
@@ -307,7 +381,7 @@ server.registerTool(
       include_completed: include_completed ?? false,
     })
 
-    if (error) throw new Error(error.message)
+    if (error) safeError('search_memories', error.message)
 
     return {
       content: [{ type: 'text', text: JSON.stringify(data ?? [], null, 2) }],
@@ -323,16 +397,21 @@ server.registerTool(
     description: 'Update content, type, category, due date, or completion status of an existing memory.',
     inputSchema: {
       id: z.string().uuid(),
-      content: z.string().optional(),
+      content: z.string().trim().min(1).max(MAX_CONTENT_LEN).optional(),
       type: z.enum(['memory', 'reminder', 'note', 'idea']).optional(),
-      category_path: z.array(z.string()).optional(),
-      due_date: z.string().nullable().optional().describe('ISO 8601 or null to clear'),
+      category_path: categoryPathSchema.optional(),
+      due_date: z
+        .string()
+        .datetime({ offset: true })
+        .nullable()
+        .optional()
+        .describe('ISO 8601 or null to clear'),
       completed: z.boolean().optional().describe('true to mark done, false to unmark'),
     },
   },
   async ({ id, content, type, category_path, due_date, completed }) => {
-    // Build update payload
-    const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
+    // Build update payload (updated_at is set by a DB trigger now)
+    const updates: Record<string, unknown> = {}
 
     if (content !== undefined) {
       updates.content = content
@@ -347,15 +426,27 @@ server.registerTool(
       const { data, error } = await supabase.rpc('resolve_category_path', {
         path: category_path,
       })
-      if (error) throw new Error(error.message)
+      if (error) safeError('update_memory.category', error.message)
       updates.category_id = data
     }
 
-    const { error } = await supabase.from('memories').update(updates).eq('id', id)
-    if (error) throw new Error(error.message)
+    if (Object.keys(updates).length === 0) {
+      throw new Error('update_memory requires at least one field to change')
+    }
+
+    const { data, error } = await supabase
+      .from('memories')
+      .update(updates)
+      .eq('id', id)
+      .is('deleted_at', null)
+      .select('id')
+      .maybeSingle()
+
+    if (error) safeError('update_memory', error.message)
+    if (!data) throw new Error('memory not found')
 
     return {
-      content: [{ type: 'text', text: JSON.stringify({ message: 'Memory updated.' }) }],
+      content: [{ type: 'text', text: JSON.stringify({ id, message: 'Memory updated.' }) }],
     }
   },
 )
@@ -371,15 +462,19 @@ server.registerTool(
     },
   },
   async ({ id }) => {
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('memories')
       .update({ deleted_at: new Date().toISOString() })
       .eq('id', id)
+      .is('deleted_at', null)
+      .select('id')
+      .maybeSingle()
 
-    if (error) throw new Error(error.message)
+    if (error) safeError('delete_memory', error.message)
+    if (!data) throw new Error('memory not found or already deleted')
 
     return {
-      content: [{ type: 'text', text: JSON.stringify({ message: 'Memory deleted.' }) }],
+      content: [{ type: 'text', text: JSON.stringify({ id, message: 'Memory deleted.' }) }],
     }
   },
 )
@@ -396,8 +491,9 @@ server.registerTool(
   },
   async ({ id }) => {
     const [entityResult, relAResult, relBResult, memCountResult] = await Promise.all([
-      supabase.from('entities').select('*').eq('id', id).single(),
-      // Relationships where this entity is the subject (A → relation → B)
+      supabase.from('entities').select('id, name, type, subtype, properties, created_at, updated_at').eq('id', id).maybeSingle(),
+      // Relationships where this entity is the subject (this → relation → B).
+      // Hint by FK column to disambiguate the two FKs to entities.
       supabase
         .from('entity_relationships')
         .select('id, relation, entity_b_id, entities!entity_b_id(name, type, subtype)')
@@ -413,7 +509,11 @@ server.registerTool(
         .eq('entity_id', id),
     ])
 
-    if (entityResult.error) throw new Error(entityResult.error.message)
+    if (entityResult.error) safeError('get_entity', entityResult.error.message)
+    if (!entityResult.data) throw new Error('entity not found')
+    if (relAResult.error) safeError('get_entity.outgoing', relAResult.error.message)
+    if (relBResult.error) safeError('get_entity.incoming', relBResult.error.message)
+    if (memCountResult.error) safeError('get_entity.count', memCountResult.error.message)
 
     const result = {
       ...entityResult.data,
@@ -436,13 +536,10 @@ server.registerTool(
     description:
       'Explicitly create a new entity. Use search_entities first to confirm it does not already exist.',
     inputSchema: {
-      name: z.string(),
+      name: z.string().trim().min(1).max(MAX_NAME_LEN),
       type: z.enum(['person', 'place', 'object', 'event', 'concept']),
-      subtype: z.string().optional().describe('e.g. "teacher", "life coach", "car"'),
-      properties: z
-        .record(z.unknown())
-        .optional()
-        .describe('Any additional structured attributes as key-value pairs'),
+      subtype: z.string().trim().min(1).max(MAX_SUBTYPE_LEN).optional().describe('e.g. "teacher", "life coach", "car"'),
+      properties: propertiesSchema.optional().describe('Any additional structured attributes as key-value pairs'),
     },
   },
   async ({ name, type, subtype, properties }) => {
@@ -455,7 +552,13 @@ server.registerTool(
       .select('id, name, type, subtype')
       .single()
 
-    if (error) throw new Error(error.message)
+    if (error) {
+      // Surface the unique-violation case as a helpful message.
+      if ((error as { code?: string }).code === '23505') {
+        throw new Error('entity with this name/type/subtype already exists')
+      }
+      safeError('add_entity', error.message)
+    }
 
     return {
       content: [{ type: 'text', text: JSON.stringify(data) }],
@@ -473,24 +576,27 @@ server.registerTool(
       'Use a verb phrase for relation, e.g. "teaches", "is parent of", "owns", "works at".',
     inputSchema: {
       entity_a_id: z.string().uuid().describe('Subject entity ID'),
-      relation: z.string().describe('Verb phrase describing the relationship'),
+      relation: z.string().trim().min(1).max(MAX_RELATION_LEN).describe('Verb phrase describing the relationship'),
       entity_b_id: z.string().uuid().describe('Object entity ID'),
     },
   },
   async ({ entity_a_id, relation, entity_b_id }) => {
+    if (entity_a_id === entity_b_id) {
+      throw new Error('cannot link an entity to itself')
+    }
     const { data, error } = await supabase
       .from('entity_relationships')
       .upsert({ entity_a_id, relation, entity_b_id }, { onConflict: 'entity_a_id,relation,entity_b_id' })
       .select('id')
       .single()
 
-    if (error) throw new Error(error.message)
+    if (error) safeError('link_entities', error.message)
 
     return {
       content: [
         {
           type: 'text',
-          text: JSON.stringify({ id: data.id, message: 'Relationship created.' }),
+          text: JSON.stringify({ id: data!.id, message: 'Relationship created.' }),
         },
       ],
     }
@@ -498,11 +604,40 @@ server.registerTool(
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Hono app with Bearer auth
+// Hono app with Bearer auth + simple per-IP rate limiting
 // ─────────────────────────────────────────────────────────────────────────────
 const app = new Hono()
 
-app.use('*', bearerAuth({ token: Deno.env.get('BRAIN_SECRET')! }))
+// Lightweight in-memory token-bucket rate limiter (per-IP). The Edge Function
+// is single-instance for short bursts; this isn't perfect but it stops easy
+// brute-forcing of BRAIN_SECRET and accidental floods.
+const RATE_LIMIT_WINDOW_MS = 60_000
+const RATE_LIMIT_MAX = 120
+const buckets = new Map<string, { count: number; resetAt: number }>()
+
+app.use('*', async (c, next) => {
+  const ip =
+    c.req.header('x-forwarded-for')?.split(',')[0].trim() ||
+    c.req.header('x-real-ip') ||
+    'unknown'
+  const now = Date.now()
+  const bucket = buckets.get(ip)
+  if (!bucket || bucket.resetAt < now) {
+    buckets.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS })
+  } else {
+    bucket.count++
+    if (bucket.count > RATE_LIMIT_MAX) {
+      return c.text('rate limit exceeded', 429)
+    }
+  }
+  // Opportunistic cleanup to bound memory.
+  if (buckets.size > 1024) {
+    for (const [k, v] of buckets) if (v.resetAt < now) buckets.delete(k)
+  }
+  await next()
+})
+
+app.use('*', bearerAuth({ token: BRAIN_SECRET }))
 
 app.all('/', async (c) => {
   const transport = new StreamableHTTPTransport()

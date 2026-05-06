@@ -9,9 +9,13 @@ create table public.categories (
   name       text not null,
   parent_id  uuid references public.categories(id) on delete cascade,
   level      int not null check (level between 1 and 3),
-  created_at timestamptz not null default now(),
-  unique (name, parent_id)
+  created_at timestamptz not null default now()
 );
+
+-- Standard UNIQUE doesn't protect against duplicate top-level categories because
+-- NULL != NULL in SQL. Use two partial indexes instead.
+create unique index on public.categories (name) where parent_id is null;
+create unique index on public.categories (name, parent_id) where parent_id is not null;
 
 create index on public.categories (parent_id);
 

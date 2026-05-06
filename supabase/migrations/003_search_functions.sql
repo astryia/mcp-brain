@@ -1,5 +1,9 @@
 -- Hybrid search using Reciprocal Rank Fusion (RRF)
--- Combines pgvector cosine similarity with PostgreSQL full-text search
+-- Combines pgvector cosine similarity with PostgreSQL full-text search.
+--
+-- All functions explicitly set search_path so the pgvector operators
+-- (`<=>`, `<->`, `<#>`) defined in the `extensions` schema resolve
+-- regardless of the caller's session search_path.
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- hybrid_search_memories
@@ -32,12 +36,22 @@ returns table (
 )
 language sql
 stable
+set search_path = public, extensions, pg_temp
 as $$
-  with candidates as (
-    select m.id
+  with recursive
+  -- Expand filter_category_id to include all descendant categories.
+  -- When filter_category_id is null the anchor returns 0 rows and the
+  -- outer (filter_category_id is null or ...) short-circuits to true.
+  cat_subtree as (
+    select id from public.categories where id = filter_category_id
+    union all
+    select c.id from public.categories c join cat_subtree t on c.parent_id = t.id
+  ),
+  candidates as (
+    select m.id, m.embedding, m.fts
     from public.memories m
     where m.deleted_at is null
-      and (filter_category_id is null or m.category_id = filter_category_id)
+      and (filter_category_id is null or m.category_id in (select id from cat_subtree))
       and (filter_type is null or m.type = filter_type)
       and (filter_date_from is null or m.created_at >= filter_date_from)
       and (filter_date_to is null or m.created_at <= filter_date_to)
@@ -49,23 +63,21 @@ as $$
     select
       c.id,
       row_number() over (
-        order by ts_rank_cd(m.fts, websearch_to_tsquery('english', query_text)) desc
+        order by ts_rank_cd(c.fts, websearch_to_tsquery('english', query_text)) desc
       ) as rank_ix
     from candidates c
-    join public.memories m on m.id = c.id
-    where m.fts @@ websearch_to_tsquery('english', query_text)
+    where c.fts @@ websearch_to_tsquery('english', query_text)
     limit least(match_count, 30) * 2
   ),
   semantic as (
     select
       c.id,
       row_number() over (
-        order by m.embedding <=> query_embedding
+        order by c.embedding <=> query_embedding
       ) as rank_ix
     from candidates c
-    join public.memories m on m.id = c.id
-    where m.embedding is not null
-    order by m.embedding <=> query_embedding
+    where c.embedding is not null
+    order by c.embedding <=> query_embedding
     limit least(match_count, 30) * 2
   ),
   combined as (
@@ -115,6 +127,7 @@ returns table (
 )
 language sql
 stable
+set search_path = public, extensions, pg_temp
 as $$
   with full_text as (
     select
@@ -165,35 +178,63 @@ $$;
 -- resolve_category_path
 -- Given an array like ['Work & Career', 'projects', 'backend']
 -- returns the category_id for the deepest match, creating missing levels.
+-- Race-safe (ON CONFLICT) and idempotent. Validates depth and segments.
 -- ─────────────────────────────────────────────────────────────────────────────
 create or replace function public.resolve_category_path(
   path text[]
 )
 returns uuid
 language plpgsql
+set search_path = public, pg_temp
 as $$
 declare
-  current_id   uuid := null;
-  current_level int;
+  current_id    uuid := null;
+  current_level int  := 0;
   seg           text;
   found_id      uuid;
 begin
+  if path is null or array_length(path, 1) is null then
+    raise exception 'category path must contain at least one segment';
+  end if;
+  if array_length(path, 1) > 3 then
+    raise exception 'category path supports at most 3 levels (got %)', array_length(path, 1);
+  end if;
+
   foreach seg in array path loop
-    current_level := coalesce(array_position(path, seg), 1);
+    current_level := current_level + 1;
+    seg := nullif(btrim(seg), '');
+    if seg is null then
+      raise exception 'category path contains an empty segment at level %', current_level;
+    end if;
 
-    -- Try to find existing category
-    select id into found_id
-    from public.categories
-    where name = seg
-      and (current_id is null and parent_id is null
-           or parent_id = current_id)
-    limit 1;
+    -- Look up by exact (parent_id, name). Two queries because
+    -- `parent_id = NULL` is always unknown.
+    if current_id is null then
+      select id into found_id
+      from public.categories
+      where parent_id is null and name = seg
+      limit 1;
+    else
+      select id into found_id
+      from public.categories
+      where parent_id = current_id and name = seg
+      limit 1;
+    end if;
 
+    -- Race-safe upsert using partial index syntax to match the two partial
+    -- unique indexes on categories (NULL parent vs non-NULL parent).
     if found_id is null then
-      -- Create the missing category
-      insert into public.categories (name, parent_id, level)
-      values (seg, current_id, current_level)
-      returning id into found_id;
+      if current_id is null then
+        insert into public.categories (name, parent_id, level)
+        values (seg, null, current_level)
+        on conflict (name) where parent_id is null do update set name = excluded.name
+        returning id into found_id;
+      else
+        insert into public.categories (name, parent_id, level)
+        values (seg, current_id, current_level)
+        on conflict (name, parent_id) where parent_id is not null do update set name = excluded.name
+        returning id into found_id;
+      end if;
     end if;
 
     current_id := found_id;
