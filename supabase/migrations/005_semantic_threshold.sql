@@ -1,6 +1,20 @@
 -- Add cosine distance threshold to semantic legs of hybrid search functions.
 -- Prevents unrelated memories/entities from ranking via the semantic leg alone.
 -- Threshold 0.7 means cosine similarity must be >= 0.3 to be considered.
+--
+-- NOTE: Adding a parameter changes the function signature, so PostgreSQL treats
+-- it as a new overload rather than replacing the old one. We must DROP the old
+-- signatures first to avoid PostgREST "ambiguous function" errors.
+
+drop function if exists public.hybrid_search_memories(
+  text, extensions.vector(384), int, uuid, text,
+  timestamptz, timestamptz, timestamptz, timestamptz,
+  boolean, float, float, int
+);
+
+drop function if exists public.hybrid_search_entities(
+  text, extensions.vector(384), int, text, float, float, int
+);
 
 create or replace function public.hybrid_search_memories(
   query_text        text,
