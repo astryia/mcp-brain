@@ -10,15 +10,17 @@ declare
   lg_id  uuid;
   fa_id  uuid;
   ll_id  uuid;
+  ap_id  uuid;
 begin
 
-  -- ── 1st level ─────────────────────────────────────────────────────────
-  insert into public.categories (name, parent_id, level) values ('Health & Wellness',   null, 1) returning id into hw_id;
-  insert into public.categories (name, parent_id, level) values ('Relationships',       null, 1) returning id into rel_id;
-  insert into public.categories (name, parent_id, level) values ('Work & Career',       null, 1) returning id into wc_id;
-  insert into public.categories (name, parent_id, level) values ('Learning & Growth',   null, 1) returning id into lg_id;
-  insert into public.categories (name, parent_id, level) values ('Finances & Assets',   null, 1) returning id into fa_id;
-  insert into public.categories (name, parent_id, level) values ('Lifestyle & Leisure', null, 1) returning id into ll_id;
+  -- ── 1st level ─────────────────────────────────────────────────
+  insert into public.categories (name, parent_id, level) values ('Health & Wellness',    null, 1) returning id into hw_id;
+  insert into public.categories (name, parent_id, level) values ('Relationships',        null, 1) returning id into rel_id;
+  insert into public.categories (name, parent_id, level) values ('Work & Career',        null, 1) returning id into wc_id;
+  insert into public.categories (name, parent_id, level) values ('Learning & Growth',    null, 1) returning id into lg_id;
+  insert into public.categories (name, parent_id, level) values ('Finances & Assets',    null, 1) returning id into fa_id;
+  insert into public.categories (name, parent_id, level) values ('Lifestyle & Leisure',  null, 1) returning id into ll_id;
+  insert into public.categories (name, parent_id, level) values ('Assistant Preferences', null, 1) returning id into ap_id;
 
   -- ── 2nd level: Health & Wellness ──────────────────────────────────────
   insert into public.categories (name, parent_id, level) values
@@ -65,5 +67,12 @@ begin
     ('food',          ll_id, 2),
     ('entertainment', ll_id, 2),
     ('home',          ll_id, 2);
-
+  -- ── 2nd level: Assistant Preferences ─────────────────────────────────────
+  -- Meta-preferences governing how the assistant should behave on the
+  -- user's behalf. Loaded at session bootstrap; never mixed with personal
+  -- preferences (e.g. food, books) which live under their own categories.
+  insert into public.categories (name, parent_id, level) values
+    ('writing',       ap_id, 2),
+    ('code',          ap_id, 2),
+    ('communication', ap_id, 2);
 end $$;
