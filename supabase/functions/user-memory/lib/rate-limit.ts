@@ -1,6 +1,6 @@
 // Lightweight in-memory token-bucket rate limiter (per-IP).
 // The Edge Function may run as multiple isolates so this isn't perfect,
-// but it stops easy brute-forcing of BRAIN_SECRET and accidental floods.
+// but it stops easy brute-forcing of USER_MEMORY_SECRET and accidental floods.
 
 import type { Context, Next } from 'hono'
 

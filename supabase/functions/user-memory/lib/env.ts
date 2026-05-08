@@ -11,4 +11,4 @@ export function requireEnv(name: string, minLength = 1): string {
 
 export const SUPABASE_URL = requireEnv('SUPABASE_URL')
 export const SUPABASE_SERVICE_ROLE_KEY = requireEnv('SUPABASE_SERVICE_ROLE_KEY', 32)
-export const BRAIN_SECRET = requireEnv('BRAIN_SECRET', 32)
+export const USER_MEMORY_SECRET = requireEnv('USER_MEMORY_SECRET', 32)
