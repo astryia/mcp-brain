@@ -16,14 +16,16 @@ export function register(server: McpServer) {
     'update_memory',
     {
       title: 'Update Memory',
-      description: 'Update content, type, category, due date, or completion status of an existing memory.',
+      description:
+        'Update content, type, category, due date, or completion status of an existing memory. ' +
+        'Set completed=true to mark a task done (records completed_at).',
       inputSchema: {
         id: z.string().uuid(),
         content: z.string().trim().min(1).max(MAX_CONTENT_LEN).optional(),
         type: memoryType.optional(),
         category_path: categoryPathSchema.optional(),
         due_date: isoDate.nullable().optional().describe('ISO 8601 or null to clear'),
-        completed: z.boolean().optional().describe('true to mark done, false to unmark'),
+        completed: z.boolean().optional().describe('true marks a task done; false unmarks'),
       },
     },
     async ({ id, content, type, category_path, due_date, completed }) => {

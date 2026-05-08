@@ -3,6 +3,6 @@
 
 export function safeError(scope: string, err: unknown): never {
   const msg = err instanceof Error ? err.message : String(err)
-  console.error(`[mcp-brain:${scope}]`, msg)
+  console.error(`[user-memory:${scope}]`, msg)
   throw new Error(`${scope} failed`)
 }

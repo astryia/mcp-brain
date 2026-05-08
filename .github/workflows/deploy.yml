@@ -33,6 +33,6 @@ jobs:
           BRAIN_SECRET: ${{ secrets.BRAIN_SECRET }}
 
       - name: Deploy edge function
-        run: supabase functions deploy mcp-brain --no-verify-jwt
+        run: supabase functions deploy user-memory --no-verify-jwt
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}

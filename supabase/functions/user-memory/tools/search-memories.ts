@@ -17,23 +17,26 @@ export function register(server: McpServer) {
     {
       title: 'Search Memories',
       description:
-        'Hybrid semantic + full-text search across memories, notes, reminders, and ideas. ' +
-        'Filter by category path (partial is fine), type, date ranges, or due date ranges.',
+        'Hybrid semantic + full-text search across all memories. ' +
+        'ALWAYS pass at least one of category_path or type to scope the query — ' +
+        'this prevents collisions between unrelated topics (e.g. medical scheduling vs. literary preferences). ' +
+        'For "what did I work on between dates X and Y?" patterns, use date_from/date_to with category_path; ' +
+        'find a temporal anchor first (e.g. "sprint 6.59 started") to determine the date range.',
       inputSchema: {
         query: z.string().trim().min(1).max(MAX_CONTENT_LEN).describe('What to search for'),
         category_path: categoryPathSchema
           .optional()
           .describe('Filter to a category path, e.g. ["Work & Career"] or ["Work & Career", "projects"]'),
-        type: memoryType.optional(),
-        date_from: isoDate.optional().describe('ISO 8601 — filter memories created after this date'),
-        date_to: isoDate.optional().describe('ISO 8601 — filter memories created before this date'),
-        due_date_from: isoDate.optional().describe('ISO 8601 — filter reminders with due date after this'),
-        due_date_to: isoDate.optional().describe('ISO 8601 — filter reminders with due date before this'),
+        type: memoryType.optional().describe('Filter by memory type (fact, preference, memory, task, note)'),
+        date_from: isoDate.optional().describe('ISO 8601 — memories created on/after this date'),
+        date_to: isoDate.optional().describe('ISO 8601 — memories created on/before this date'),
+        due_date_from: isoDate.optional().describe('ISO 8601 — tasks with due date on/after this'),
+        due_date_to: isoDate.optional().describe('ISO 8601 — tasks with due date on/before this'),
         include_completed: z
           .boolean()
           .optional()
           .default(false)
-          .describe('Include completed reminders (default: false)'),
+          .describe('Include completed tasks (default: false)'),
         limit: z.number().int().min(1).max(50).optional().default(10),
       },
     },
