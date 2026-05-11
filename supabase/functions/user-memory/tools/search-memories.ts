@@ -51,6 +51,13 @@ export function register(server: McpServer) {
       include_completed,
       limit,
     }) => {
+      if (!type && (!category_path || category_path.length === 0)) {
+        throw new Error(
+          'search_memories requires at least one of `type` or `category_path` to scope the query. ' +
+            'Pure semantic search collides across unrelated topics.',
+        )
+      }
+
       let categoryId: string | null = null
       if (category_path && category_path.length > 0) {
         const { data, error } = await supabase.rpc('resolve_category_path', {
