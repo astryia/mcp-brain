@@ -67,7 +67,7 @@ When in doubt: a wasted `search_memories` call is cheap; a missed memory is the 
 3. **Never invent UUIDs or category names.** Get IDs from a search/list; if no category fits, file under the closest level-1 parent.
 4. **Tasks with deadlines need `due_date`** in ISO 8601 with offset.
 5. **Search before storing** if a near-duplicate might exist; prefer `update_memory` over duplicates.
-6. **Enrich before storing** (see next section).
+6. **Decompose and enrich before storing** (see next section).
 7. **`delete_memory` only on explicit user request** or to correct a mistake (it's a soft delete).
 8. **Style/tone/code preferences belong under `Assistant Preferences`**, not under personal-life categories — otherwise the bootstrap won't find them.
 
@@ -75,16 +75,19 @@ When in doubt: a wasted `search_memories` call is cheap; a missed memory is the 
 
 ## Enrichment — required before every `add_memory`
 
-Raw input is usually terse and pronoun-heavy. Stored as-is, it loses meaning in weeks. Before calling `add_memory`, rewrite the content into a **self-contained sentence** that will still make sense in 6 months with no surrounding context:
+Raw input is usually terse and may bundle several independent facts. Stored as-is, it loses meaning in weeks and becomes hard to search. Before calling `add_memory`:
 
-- Resolve pronouns and vague references ("it", "the new one", "that thing") to concrete names.
-- Add the **project / product / person / place** it relates to if you can infer it from recent conversation, open files, or other recent memories.
-- Add the **why / what changed** if the raw text only says the *what*.
-- Preserve the user's original wording where it carries meaning. **Do not fabricate facts** — only add context you can actually source.
+1. **Decompose.** If the input contains multiple independent facts/events/items (signals: "and", "also", numbered lists, "I'm doing X and Y", "two things…"), split it into separate memories and call `add_memory` once per item. Each memory must stand on its own. Only keep things together if they truly describe a single event.
+2. **Enrich each piece** into a **self-contained sentence**:
+   - Resolve pronouns and vague references ("it", "the new one", "that thing") to concrete names.
+   - Add the **project / product / person / place** it relates to if you can infer it from recent conversation, open files, or other recent memories.
+   - Add the **why / what changed** if the raw text only says the *what*.
+   - Preserve the user's original wording where it carries meaning. **Do not fabricate facts** — only add context you can actually source.
 
 If you don't have enough context, first call `search_memories` (scoped by likely `type` and `category_path`) to pull related memories. If still ambiguous, ask **one** clarifying question instead of guessing.
 
 > Examples (illustrative):
+> - "at Acme I'm on two projects: Atlas and Borealis" → **two** memories: "At Acme, assigned to the Atlas project." + "At Acme, assigned to the Borealis project."
 > - "shipped the new ranker" → "Shipped v2 of the search ranker on Project Atlas — replaces the BM25 baseline with a learned cross-encoder."
 > - "talked to Sam about the budget" → "Reviewed the Q3 marketing budget with Sam Patel; agreed to cut paid search by 20% and reinvest in content."
 > - "fixed the bug" → "Fixed the off-by-one in PaginationHelper that was dropping the last result on every page in the admin dashboard."
