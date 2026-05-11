@@ -8,6 +8,7 @@ import { Hono } from 'hono'
 import { auth } from './lib/auth.ts'
 import { rateLimit } from './lib/rate-limit.ts'
 import { registerAllTools } from './tools/index.ts'
+import { registerAllPrompts } from './prompts/index.ts'
 
 const server = new McpServer({ name: 'user-memory', version: '2.1.0' }, {
   instructions: `
@@ -35,6 +36,7 @@ for the entire conversation.
 `.trim(),
 })
 registerAllTools(server)
+registerAllPrompts(server)
 
 // Single transport — connect once, reuse for all requests.
 const transport = new StreamableHTTPTransport()
